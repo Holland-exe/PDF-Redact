@@ -8,30 +8,43 @@ import io
 import ttkbootstrap as tb
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-# Load tkdnd manually if needed
-def setup_tkdnd_library():
-    tkdnd_path = os.path.join(
-        os.environ.get("TK_LIBRARY", ""),
-        "../../tkdnd/tkdnd.tcl"
-    )
-    fallback_path = r"C:\Users\Luke Holland\AppData\Local\Programs\Python\Python313\tcl\tkdnd\tkdnd.tcl"
+VERSION = "1.1"
 
-    if os.path.exists(fallback_path):
-        os.environ["TKDND_LIBRARY"] = os.path.dirname(fallback_path)
+# ----------------------------
+# Handle PyInstaller resource paths
+# ----------------------------
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and PyInstaller """
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+# ----------------------------
+# Setup tkdnd path for drag & drop
+# ----------------------------
+def setup_tkdnd_library():
+    tkdnd_relative = os.path.join("tkdnd", "tkdnd.tcl")
+    tkdnd_path = resource_path(tkdnd_relative)
+
+    if os.path.exists(tkdnd_path):
+        os.environ["TKDND_LIBRARY"] = os.path.dirname(tkdnd_path)
     else:
-        raise FileNotFoundError(f"tkdnd.tcl not found at expected path: {fallback_path}")
+        raise FileNotFoundError(f"tkdnd.tcl not found at: {tkdnd_path}")
 
 setup_tkdnd_library()
 
-# Define version
-VERSION = "1.1"
-
+# ----------------------------
+# PDF Redactor Application
+# ----------------------------
 class PDFRedactorApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"PDF Redact v{VERSION}")
-        self.root.iconbitmap("icon.ico")
-        self.last_bulk_action = None  # to store batch cancellations
+        self.root.iconbitmap(resource_path("icon.ico"))
+        
+        self.last_bulk_action = None
 
         self.doc = None
         self.zoom_level = 1.0
@@ -90,7 +103,6 @@ class PDFRedactorApp:
         tb.Button(top_frame, text="Zoom +", command=self.zoom_in).pack(side=tk.RIGHT, padx=5)
         tb.Button(top_frame, text="Zoom -", command=self.zoom_out).pack(side=tk.RIGHT, padx=5)
 
-        # Scrollable canvas for pages
         self.canvas = tk.Canvas(content_area, bg="gray20", highlightthickness=0)
         self.vscroll = tb.Scrollbar(content_area, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vscroll.set)
@@ -240,7 +252,6 @@ class PDFRedactorApp:
                 self.rect = None
                 return
 
-        # If no page found, delete rect
         self.canvas.delete(self.rect)
         self.rect = None
 
@@ -324,8 +335,11 @@ class PDFRedactorApp:
             self.doc.save(save_path)
             messagebox.showinfo("Success", "Redacted PDF saved.")
 
+# ----------------------------
+# Launch Application
+# ----------------------------
 if __name__ == "__main__":
     root = TkinterDnD.Tk()
-    style = tb.Style("superhero")  # Initialize ttkbootstrap style
+    style = tb.Style("superhero")
     app = PDFRedactorApp(root)
     root.mainloop()
