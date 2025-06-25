@@ -5,29 +5,26 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 import io
+import urllib.request
 import ttkbootstrap as tb
 from tkinterdnd2 import DND_FILES, TkinterDnD
+import threading
+import webbrowser
 
-VERSION = "1.1"
+VERSION = "1.0"
+VERSION_URL = "https://github.com/Holland-exe/PDF-Redact/releases/download/latest/version.txt"
+UPDATE_URL = "https://github.com/Holland-exe/PDF-Redact/releases/download/latest/pdfredact.exe"
 
-# ----------------------------
-# Handle PyInstaller resource paths
-# ----------------------------
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and PyInstaller """
     try:
         base_path = sys._MEIPASS
     except AttributeError:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
-# ----------------------------
-# Setup tkdnd path for drag & drop
-# ----------------------------
 def setup_tkdnd_library():
     tkdnd_relative = os.path.join("tkdnd", "tkdnd.tcl")
     tkdnd_path = resource_path(tkdnd_relative)
-
     if os.path.exists(tkdnd_path):
         os.environ["TKDND_LIBRARY"] = os.path.dirname(tkdnd_path)
     else:
@@ -35,37 +32,31 @@ def setup_tkdnd_library():
 
 setup_tkdnd_library()
 
-# ----------------------------
-# PDF Redactor Application
-# ----------------------------
 class PDFRedactorApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"PDF Redact v{VERSION}")
         self.root.iconbitmap(resource_path("icon.ico"))
-        
-        self.last_bulk_action = None
 
+        self.last_bulk_action = None
         self.doc = None
         self.zoom_level = 1.0
         self.redaction_boxes = []
         self.undo_stack = []
         self.redo_stack = []
-
         self.start_x = self.start_y = None
         self.rect = None
-
         self.page_images = []
         self.page_positions = []
 
         self.setup_ui()
+        self.check_for_updates()
 
     def setup_ui(self):
         self.root.geometry("1200x800")
         self.main_frame = tb.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Sidebar for thumbnails
         self.sidebar = tb.Frame(self.main_frame, width=160)
         self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
 
@@ -78,14 +69,11 @@ class PDFRedactorApp:
         )
         self.thumb_canvas.create_window((0, 0), window=self.thumb_container, anchor="nw")
         self.thumb_canvas.configure(yscrollcommand=self.thumb_scrollbar.set)
-
         self.thumb_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.thumb_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.thumb_canvas.bind("<Enter>", lambda e: self._bind_mousewheel(self.thumb_canvas))
         self.thumb_canvas.bind("<Leave>", lambda e: self._unbind_mousewheel(self.thumb_canvas))
-
-        # Content area
         content_area = tb.Frame(self.main_frame)
         content_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -95,18 +83,23 @@ class PDFRedactorApp:
         tb.Button(top_frame, text="Open PDF", command=self.open_pdf, bootstyle="primary").pack(side=tk.LEFT, padx=5)
         self.save_btn = tb.Button(top_frame, text="Save Redacted PDF", command=self.save_pdf, state=tk.DISABLED, bootstyle="success")
         self.save_btn.pack(side=tk.LEFT, padx=5)
-
         tb.Button(top_frame, text="Undo", command=self.undo_redaction, bootstyle="warning").pack(side=tk.LEFT, padx=5)
         tb.Button(top_frame, text="Redo", command=self.redo_redaction, bootstyle="info").pack(side=tk.LEFT, padx=5)
         tb.Button(top_frame, text="Cancel All", command=self.cancel_all_selections, bootstyle="danger").pack(side=tk.LEFT, padx=5)
 
-        tb.Button(top_frame, text="Zoom +", command=self.zoom_in).pack(side=tk.RIGHT, padx=5)
-        tb.Button(top_frame, text="Zoom -", command=self.zoom_out).pack(side=tk.RIGHT, padx=5)
+        # Create zoom frame on right side of top_frame
+        zoom_frame = tb.Frame(top_frame)
+        zoom_frame.pack(side=tk.RIGHT, padx=5)
+        tb.Button(zoom_frame, text="Zoom +", command=self.zoom_in).pack(side=tk.LEFT, padx=2)
+        tb.Button(zoom_frame, text="Zoom -", command=self.zoom_out).pack(side=tk.LEFT, padx=2)
+
+        # Create update button but don't pack it yet; keep reference to zoom_frame
+        self.update_btn = tb.Button(zoom_frame, text="Update Available", command=self.download_update, bootstyle="danger")
+        self.zoom_frame = zoom_frame  # store zoom_frame reference for later
 
         self.canvas = tk.Canvas(content_area, bg="gray20", highlightthickness=0)
         self.vscroll = tb.Scrollbar(content_area, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vscroll.set)
-
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.vscroll.pack(side=tk.RIGHT, fill=tk.Y)
 
@@ -116,9 +109,27 @@ class PDFRedactorApp:
         self.canvas.bind("<Enter>", lambda e: self._bind_mousewheel(self.canvas))
         self.canvas.bind("<Leave>", lambda e: self._unbind_mousewheel(self.canvas))
 
-        # Drag & drop
         self.canvas.drop_target_register(DND_FILES)
         self.canvas.dnd_bind('<<Drop>>', self.drop)
+
+    def check_for_updates(self):
+        def _check():
+            try:
+                with urllib.request.urlopen(VERSION_URL) as response:
+                    latest_version = response.read().decode("utf-8").strip()
+                    if self.is_newer_version(latest_version, VERSION):
+                        self.root.after(0, lambda: self.update_btn.pack(in_=self.zoom_frame, side=tk.LEFT, padx=2))
+            except Exception as e:
+                print("Update check failed:", e)
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def is_newer_version(self, remote, local):
+        def parse(v): return [int(x) for x in v.split('.')]
+        return parse(remote) > parse(local)
+
+    def download_update(self):
+        webbrowser.open(UPDATE_URL)
 
     def _bind_mousewheel(self, widget):
         widget.bind_all("<MouseWheel>", self.mouse_scroll)
@@ -144,7 +155,6 @@ class PDFRedactorApp:
         except Exception as e:
             messagebox.showerror("Error", f"Cannot open PDF:\n{e}")
             return
-
         self.redaction_boxes.clear()
         self.undo_stack.clear()
         self.redo_stack.clear()
@@ -155,14 +165,12 @@ class PDFRedactorApp:
     def render_thumbnails(self):
         for widget in self.thumb_container.winfo_children():
             widget.destroy()
-
         self.thumb_images = []
         for i, page in enumerate(self.doc):
             pix = page.get_pixmap(matrix=fitz.Matrix(0.2, 0.2))
             img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
             tk_img = ImageTk.PhotoImage(img)
             self.thumb_images.append(tk_img)
-
             btn = tb.Button(self.thumb_container, image=tk_img, command=lambda idx=i: self.scroll_to_page(idx))
             btn.pack(pady=2)
 
@@ -170,28 +178,23 @@ class PDFRedactorApp:
         self.canvas.delete("all")
         self.page_images.clear()
         self.page_positions.clear()
-
         y_offset = 10
         gap = 20
         canvas_width = self.canvas.winfo_width() or 800
-
         for i, page in enumerate(self.doc):
             mat = fitz.Matrix(self.zoom_level, self.zoom_level)
             pix = page.get_pixmap(matrix=mat)
             img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
             tk_img = ImageTk.PhotoImage(img)
             self.page_images.append(tk_img)
-
             x = canvas_width // 2
             y = y_offset
-
             img_id = self.canvas.create_image(x, y, image=tk_img, anchor="n")
             bbox = self.canvas.bbox(img_id)
             self.page_positions.append((i, bbox))
-
             y_offset = bbox[3] + gap
-
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.update_redaction_boxes()
 
     def scroll_to_page(self, index):
         if index < len(self.page_positions):
@@ -229,117 +232,111 @@ class PDFRedactorApp:
     def finish_selection(self, event):
         if not self.doc or not self.rect:
             return
-
         x1, y1, x2, y2 = self.canvas.coords(self.rect)
         center_y = (y1 + y2) / 2
-
         for page_index, bbox in self.page_positions:
             top, bottom = bbox[1], bbox[3]
             if top <= center_y <= bottom:
                 left = bbox[0]
                 top_page = bbox[1]
-
                 rel_x1 = (x1 - left) / self.zoom_level
                 rel_y1 = (y1 - top_page) / self.zoom_level
                 rel_x2 = (x2 - left) / self.zoom_level
                 rel_y2 = (y2 - top_page) / self.zoom_level
-
                 pdf_rect = fitz.Rect(rel_x1, rel_y1, rel_x2, rel_y2)
                 self.canvas.itemconfig(self.rect, outline="red", fill="black", stipple="gray50", width=2)
                 self.redaction_boxes.append((page_index, pdf_rect, self.rect))
-                self.undo_stack.append((page_index, pdf_rect, self.rect))
+                self.undo_stack.append(("add", (page_index, pdf_rect, self.rect)))
                 self.redo_stack.clear()
                 self.rect = None
-                return
+                break
+        self.update_redaction_boxes()
 
-        self.canvas.delete(self.rect)
-        self.rect = None
+    def update_redaction_boxes(self):
+        # Draw black rectangles on canvas over redaction areas
+        for page_index, pdf_rect, rect_id in self.redaction_boxes:
+            # Canvas coords = page bbox + pdf_rect * zoom
+            bbox = self.page_positions[page_index][1]
+            left, top = bbox[0], bbox[1]
+            x1 = left + pdf_rect.x0 * self.zoom_level
+            y1 = top + pdf_rect.y0 * self.zoom_level
+            x2 = left + pdf_rect.x1 * self.zoom_level
+            y2 = top + pdf_rect.y1 * self.zoom_level
+            self.canvas.coords(rect_id, x1, y1, x2, y2)
+            self.canvas.itemconfig(rect_id, fill="black", stipple="gray50", outline="red")
 
     def undo_redaction(self):
-        if self.undo_stack:
-            last = self.undo_stack.pop()
-            if last in self.redaction_boxes:
-                self.redaction_boxes.remove(last)
-            self.redo_stack.append(last)
-            _, _, canvas_id = last
-            self.canvas.delete(canvas_id)
-
-        elif self.last_bulk_action:
-            for page_index, pdf_rect, _ in self.last_bulk_action:
-                for p_idx, bbox in self.page_positions:
-                    if p_idx == page_index:
-                        left, top = bbox[0], bbox[1]
-                        x1 = pdf_rect.x0 * self.zoom_level + left
-                        y1 = pdf_rect.y0 * self.zoom_level + top
-                        x2 = pdf_rect.x1 * self.zoom_level + left
-                        y2 = pdf_rect.y1 * self.zoom_level + top
-                        break
-
-                canvas_id = self.canvas.create_rectangle(
-                    x1, y1, x2, y2,
-                    outline="red", fill="black", stipple="gray50", width=2
-                )
-                self.redaction_boxes.append((page_index, pdf_rect, canvas_id))
-                self.undo_stack.append((page_index, pdf_rect, canvas_id))
-
-            self.redo_stack.clear()
-            self.last_bulk_action = None
+        if not self.undo_stack:
+            return
+        action, data = self.undo_stack.pop()
+        if action == "add":
+            if data in self.redaction_boxes:
+                self.redaction_boxes.remove(data)
+                self.canvas.delete(data[2])
+            self.redo_stack.append(("add", data))
+        self.update_redaction_boxes()
 
     def redo_redaction(self):
-        if self.redo_stack:
-            page_index, pdf_rect, _ = self.redo_stack.pop()
+        if not self.redo_stack:
+            return
+        action, data = self.redo_stack.pop()
+        if action == "add":
+            page_index, pdf_rect, old_rect_id = data
 
-            for p_idx, bbox in self.page_positions:
-                if p_idx == page_index:
-                    left, top = bbox[0], bbox[1]
-                    x1 = pdf_rect.x0 * self.zoom_level + left
-                    y1 = pdf_rect.y0 * self.zoom_level + top
-                    x2 = pdf_rect.x1 * self.zoom_level + left
-                    y2 = pdf_rect.y1 * self.zoom_level + top
-                    break
+        # Get page bbox on canvas
+        bbox = self.page_positions[page_index][1]
+        left, top = bbox[0], bbox[1]
+        x1 = left + pdf_rect.x0 * self.zoom_level
+        y1 = top + pdf_rect.y0 * self.zoom_level
+        x2 = left + pdf_rect.x1 * self.zoom_level
+        y2 = top + pdf_rect.y1 * self.zoom_level
 
-            canvas_id = self.canvas.create_rectangle(
-                x1, y1, x2, y2,
-                outline="red", fill="black", stipple="gray50", width=2
-            )
-            entry = (page_index, pdf_rect, canvas_id)
-            self.redaction_boxes.append(entry)
-            self.undo_stack.append(entry)
+        # Create new rectangle on canvas (matching the previous)
+        new_rect_id = self.canvas.create_rectangle(x1, y1, x2, y2, fill="black", stipple="gray50", outline="red", width=2)
+
+        new_data = (page_index, pdf_rect, new_rect_id)
+        self.redaction_boxes.append(new_data)
+        self.undo_stack.append(("add", new_data))
+
+        self.update_redaction_boxes()
+
 
     def cancel_all_selections(self):
-        if not self.redaction_boxes:
-            return
-
-        self.last_bulk_action = list(self.redaction_boxes)
-
-        for _, _, canvas_id in self.redaction_boxes:
-            self.canvas.delete(canvas_id)
-
+        for _, _, rect_id in self.redaction_boxes:
+            self.canvas.delete(rect_id)
+        self.redaction_boxes.clear()
         self.undo_stack.clear()
         self.redo_stack.clear()
-        self.redaction_boxes.clear()
 
     def save_pdf(self):
         if not self.doc or not self.redaction_boxes:
-            messagebox.showwarning("Nothing to Redact", "No redactions were made.")
+            messagebox.showwarning("Warning", "No PDF loaded or no redactions made.")
+            return
+        save_path = filedialog.asksaveasfilename(defaultextension=".pdf",
+                                                 filetypes=[("PDF files", "*.pdf")])
+        if not save_path:
             return
 
+        doc_copy = fitz.open()
+        for i in range(len(self.doc)):
+            doc_copy.insert_pdf(self.doc, from_page=i, to_page=i)
+
         for page_index, rect, _ in self.redaction_boxes:
-            page = self.doc[page_index]
+            page = doc_copy[page_index]
             page.add_redact_annot(rect, fill=(0, 0, 0))
-        for page in self.doc:
+        for page in doc_copy:
             page.apply_redactions()
 
-        save_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
-        if save_path:
-            self.doc.save(save_path)
-            messagebox.showinfo("Success", "Redacted PDF saved.")
+        try:
+            doc_copy.save(save_path)
+            messagebox.showinfo("Success", "Redacted PDF saved successfully.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save PDF:\n{e}")
+        finally:
+            doc_copy.close()
 
-# ----------------------------
-# Launch Application
-# ----------------------------
 if __name__ == "__main__":
     root = TkinterDnD.Tk()
-    style = tb.Style("superhero")
+    style = tb.Style("darkly")
     app = PDFRedactorApp(root)
     root.mainloop()
