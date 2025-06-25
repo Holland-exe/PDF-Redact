@@ -14,14 +14,14 @@ import sys
 import shutil
 import time
 
-CURRENT_VERSION = "1.0.0"
-EXECUTABLE_NAME = "PDFRedactPro.exe"  # Change as needed
+CURRENT_VERSION = "1.1"
+EXECUTABLE_NAME = "PDFRedact.exe"  # Change as needed
 
 
 class PDFRedactorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title(f"PDF Redact Pro v{CURRENT_VERSION}")
+        self.root.title(f"PDF Redact v{CURRENT_VERSION}")
 
         self.doc = None
         self.zoom_level = 1.0
