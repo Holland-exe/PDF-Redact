@@ -29,7 +29,7 @@ VERSION = "1.1"
 class PDFRedactorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title(f"PDF Redact Pro - v{VERSION}")
+        self.root.title(f"PDF Redact v{VERSION}")
         self.root.iconbitmap("icon.ico")
         self.last_bulk_action = None  # to store batch cancellations
 
