@@ -1,50 +1,44 @@
 import fitz  # PyMuPDF
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 import io
 import os
 from tkinterdnd2 import DND_FILES, TkinterDnD
+import ttkbootstrap as tb  # Modern themed ttk replacement
+
 
 class PDFRedactorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("PDF Redact")
-
-        # Set window icon if exists
-        icon_path = ".png"
-        if os.path.exists(icon_path):
-            try:
-                icon_img = Image.open(icon_path)
-                icon_tk = ImageTk.PhotoImage(icon_img)
-                self.root.iconphoto(False, icon_tk)
-            except Exception as e:
-                print(f"Could not set icon: {e}")
+        self.root.title("PDF Redact Pro")
 
         self.doc = None
         self.zoom_level = 1.0
         self.redaction_boxes = []
+        self.undo_stack = []
+        self.redo_stack = []
 
         self.start_x = self.start_y = None
         self.rect = None
 
-        self.page_images = []  # Store PhotoImage for each page
-        self.page_positions = []  # Y offsets for each page on canvas
+        self.page_images = []
+        self.page_positions = []
 
         self.setup_ui()
 
     def setup_ui(self):
         self.root.geometry("1200x800")
-        self.main_frame = ttk.Frame(self.root)
+        self.main_frame = tb.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Sidebar for thumbnails
-        self.sidebar = ttk.Frame(self.main_frame, width=120)
+        # Sidebar for thumbnails - made wider (150 instead of 120)
+        self.sidebar = tb.Frame(self.main_frame, width=150)
         self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
 
-        self.thumb_canvas = tk.Canvas(self.sidebar, width=110, highlightthickness=0)
-        self.thumb_scrollbar = ttk.Scrollbar(self.sidebar, orient="vertical", command=self.thumb_canvas.yview)
-        self.thumb_container = ttk.Frame(self.thumb_canvas)
+        self.thumb_canvas = tk.Canvas(self.sidebar, width=140, highlightthickness=0)
+        self.thumb_scrollbar = tb.Scrollbar(self.sidebar, orient="vertical", command=self.thumb_canvas.yview)
+        self.thumb_container = tb.Frame(self.thumb_canvas)
 
         self.thumb_container.bind(
             "<Configure>", lambda e: self.thumb_canvas.configure(scrollregion=self.thumb_canvas.bbox("all"))
@@ -55,23 +49,31 @@ class PDFRedactorApp:
         self.thumb_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.thumb_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # Bind mouse wheel scrolling only for thumbnails when hovered
+        self.thumb_canvas.bind("<Enter>", lambda e: self.thumb_canvas.bind_all("<MouseWheel>", self.thumb_mouse_scroll))
+        self.thumb_canvas.bind("<Leave>", lambda e: self.thumb_canvas.unbind_all("<MouseWheel>"))
+
         # Content area
-        content_area = ttk.Frame(self.main_frame)
+        content_area = tb.Frame(self.main_frame)
         content_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        top_frame = ttk.Frame(content_area)
+        top_frame = tb.Frame(content_area)
         top_frame.pack(fill=tk.X, pady=5)
 
-        ttk.Button(top_frame, text="Open PDF", command=self.open_pdf).pack(side=tk.LEFT, padx=5)
-        self.save_btn = ttk.Button(top_frame, text="Save Redacted PDF", command=self.save_pdf, state=tk.DISABLED)
-        self.save_btn.pack(side=tk.LEFT)
+        tb.Button(top_frame, text="Open PDF", command=self.open_pdf, bootstyle="primary").pack(side=tk.LEFT, padx=5)
+        self.save_btn = tb.Button(top_frame, text="Save Redacted PDF", command=self.save_pdf, state=tk.DISABLED, bootstyle="success")
+        self.save_btn.pack(side=tk.LEFT, padx=5)
 
-        ttk.Button(top_frame, text="Zoom +", command=self.zoom_in).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(top_frame, text="Zoom -", command=self.zoom_out).pack(side=tk.RIGHT)
+        tb.Button(top_frame, text="Undo", command=self.undo_redaction, bootstyle="warning").pack(side=tk.LEFT, padx=5)
+        tb.Button(top_frame, text="Redo", command=self.redo_redaction, bootstyle="info").pack(side=tk.LEFT, padx=5)
+        tb.Button(top_frame, text="Cancel All", command=self.cancel_all_selections, bootstyle="danger").pack(side=tk.LEFT, padx=5)
+
+        tb.Button(top_frame, text="Zoom +", command=self.zoom_in).pack(side=tk.RIGHT, padx=5)
+        tb.Button(top_frame, text="Zoom -", command=self.zoom_out).pack(side=tk.RIGHT, padx=5)
 
         # Scrollable canvas for pages
-        self.canvas = tk.Canvas(content_area, bg="gray", highlightthickness=0)
-        self.vscroll = ttk.Scrollbar(content_area, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.canvas = tk.Canvas(content_area, bg="gray20", highlightthickness=0)
+        self.vscroll = tb.Scrollbar(content_area, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vscroll.set)
 
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -86,6 +88,13 @@ class PDFRedactorApp:
         self.canvas.drop_target_register(DND_FILES)
         self.canvas.dnd_bind('<<Drop>>', self.drop)
 
+    def thumb_mouse_scroll(self, event):
+        delta = event.delta
+        if os.name == 'nt':
+            self.thumb_canvas.yview_scroll(int(-1 * (delta / 120)), "units")
+        else:
+            self.thumb_canvas.yview_scroll(int(-1 * delta), "units")
+
     def drop(self, event):
         files = self.root.tk.splitlist(event.data)
         for f in files:
@@ -95,9 +104,8 @@ class PDFRedactorApp:
 
     def open_pdf(self):
         file_path = filedialog.askopenfilename(filetypes=[("PDF files", "*.pdf")])
-        if not file_path:
-            return
-        self.open_pdf_path(file_path)
+        if file_path:
+            self.open_pdf_path(file_path)
 
     def open_pdf_path(self, file_path):
         try:
@@ -107,6 +115,8 @@ class PDFRedactorApp:
             return
 
         self.redaction_boxes.clear()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
         self.render_thumbnails()
         self.render_all_pages()
         self.save_btn.config(state=tk.NORMAL)
@@ -122,7 +132,7 @@ class PDFRedactorApp:
             tk_img = ImageTk.PhotoImage(img)
             self.thumb_images.append(tk_img)
 
-            btn = ttk.Button(self.thumb_container, image=tk_img, command=lambda idx=i: self.scroll_to_page(idx))
+            btn = tb.Button(self.thumb_container, image=tk_img, command=lambda idx=i: self.scroll_to_page(idx))
             btn.pack(pady=2)
 
     def render_all_pages(self):
@@ -132,7 +142,7 @@ class PDFRedactorApp:
 
         y_offset = 10
         gap = 20
-        canvas_width = self.canvas.winfo_width() or 800  # fallback width
+        canvas_width = self.canvas.winfo_width() or 800
 
         for i, page in enumerate(self.doc):
             mat = fitz.Matrix(self.zoom_level, self.zoom_level)
@@ -141,18 +151,29 @@ class PDFRedactorApp:
             tk_img = ImageTk.PhotoImage(img)
             self.page_images.append(tk_img)
 
-            # Center pages horizontally
             x = canvas_width // 2
             y = y_offset
 
-            # Create image on canvas anchored by center top
             img_id = self.canvas.create_image(x, y, image=tk_img, anchor="n")
-
-            # Store position and page info (top-left corner)
             bbox = self.canvas.bbox(img_id)
             self.page_positions.append((i, bbox))
 
             y_offset = bbox[3] + gap
+
+        # Draw redaction boxes on canvas as translucent black rectangles
+        for page_index, rect in self.redaction_boxes:
+            # Get canvas coordinates of the page image
+            _, bbox = self.page_positions[page_index]
+            left = bbox[0]
+            top = bbox[1]
+
+            # Convert PDF rect to canvas coords
+            x1 = left + rect.x0 * self.zoom_level
+            y1 = top + rect.y0 * self.zoom_level
+            x2 = left + rect.x1 * self.zoom_level
+            y2 = top + rect.y1 * self.zoom_level
+
+            self.canvas.create_rectangle(x1, y1, x2, y2, fill="black", stipple="gray50", outline="")
 
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
@@ -161,8 +182,7 @@ class PDFRedactorApp:
             _, bbox = self.page_positions[index]
             top_y = bbox[1]
             height = self.canvas.bbox("all")[3]
-            if height > 0:
-                self.canvas.yview_moveto(top_y / height)
+            self.canvas.yview_moveto(top_y / height)
 
     def zoom_in(self):
         self.zoom_level *= 1.25
@@ -174,7 +194,7 @@ class PDFRedactorApp:
 
     def mouse_scroll(self, event):
         delta = event.delta
-        if os.name == 'nt':  # Windows
+        if os.name == 'nt':
             self.canvas.yview_scroll(int(-1 * (delta / 120)), "units")
         else:
             self.canvas.yview_scroll(int(-1 * delta), "units")
@@ -197,12 +217,9 @@ class PDFRedactorApp:
         x1, y1, x2, y2 = self.canvas.coords(self.rect)
         center_y = (y1 + y2) / 2
 
-        # Find which page the selection falls on by Y coordinate within page bbox
         for page_index, bbox in self.page_positions:
             top, bottom = bbox[1], bbox[3]
             if top <= center_y <= bottom:
-                # Calculate PDF coords:
-                # Canvas bbox: (left, top, right, bottom)
                 left = bbox[0]
                 top_page = bbox[1]
 
@@ -213,9 +230,34 @@ class PDFRedactorApp:
 
                 pdf_rect = fitz.Rect(rel_x1, rel_y1, rel_x2, rel_y2)
                 self.redaction_boxes.append((page_index, pdf_rect))
-
+                self.undo_stack.append((page_index, pdf_rect))
+                self.redo_stack.clear()  # Clear redo stack after new action
                 self.canvas.itemconfig(self.rect, fill="black", stipple="gray50")
                 break
+
+    def undo_redaction(self):
+        if self.undo_stack:
+            last = self.undo_stack.pop()
+            self.redo_stack.append(last)
+            if last in self.redaction_boxes:
+                self.redaction_boxes.remove(last)
+            self.render_all_pages()  # re-render to remove the visual box
+
+    def redo_redaction(self):
+        if self.redo_stack:
+            last = self.redo_stack.pop()
+            self.redaction_boxes.append(last)
+            self.undo_stack.append(last)
+            self.render_all_pages()
+
+    def cancel_all_selections(self):
+        if not self.redaction_boxes:
+            return
+        if messagebox.askyesno("Cancel All", "Are you sure you want to cancel all redaction selections?"):
+            self.redaction_boxes.clear()
+            self.undo_stack.clear()
+            self.redo_stack.clear()
+            self.render_all_pages()
 
     def save_pdf(self):
         if not self.doc or not self.redaction_boxes:
@@ -232,7 +274,9 @@ class PDFRedactorApp:
             self.doc.save(save_path)
             messagebox.showinfo("Success", "Redacted PDF saved.")
 
+
 if __name__ == "__main__":
     root = TkinterDnD.Tk()
+    tb.Style("superhero")  # Options: superhero, flatly, darkly, cyborg, etc.
     app = PDFRedactorApp(root)
     root.mainloop()
