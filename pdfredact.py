@@ -6,12 +6,22 @@ import io
 import os
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import ttkbootstrap as tb  # Modern themed ttk replacement
+import threading
+import requests
+import tempfile
+import subprocess
+import sys
+import shutil
+import time
+
+CURRENT_VERSION = "1.0.0"
+EXECUTABLE_NAME = "PDFRedactPro.exe"  # Change as needed
 
 
 class PDFRedactorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("PDF Redact Pro")
+        self.root.title(f"PDF Redact Pro v{CURRENT_VERSION}")
 
         self.doc = None
         self.zoom_level = 1.0
@@ -29,16 +39,16 @@ class PDFRedactorApp:
 
     def setup_ui(self):
         self.root.geometry("1200x800")
-        self.main_frame = tb.Frame(self.root)
+        self.main_frame = tb.Frame(self.root, bootstyle="dark")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Sidebar for thumbnails - made wider (150 instead of 120)
-        self.sidebar = tb.Frame(self.main_frame, width=150)
+        # Sidebar for thumbnails - wider now for better preview
+        self.sidebar = tb.Frame(self.main_frame, width=180, bootstyle="dark")
         self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
 
-        self.thumb_canvas = tk.Canvas(self.sidebar, width=140, highlightthickness=0)
+        self.thumb_canvas = tk.Canvas(self.sidebar, width=170, bg="gray20", highlightthickness=0)
         self.thumb_scrollbar = tb.Scrollbar(self.sidebar, orient="vertical", command=self.thumb_canvas.yview)
-        self.thumb_container = tb.Frame(self.thumb_canvas)
+        self.thumb_container = tb.Frame(self.thumb_canvas, bootstyle="dark")
 
         self.thumb_container.bind(
             "<Configure>", lambda e: self.thumb_canvas.configure(scrollregion=self.thumb_canvas.bbox("all"))
@@ -49,15 +59,15 @@ class PDFRedactorApp:
         self.thumb_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.thumb_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Bind mouse wheel scrolling only for thumbnails when hovered
-        self.thumb_canvas.bind("<Enter>", lambda e: self.thumb_canvas.bind_all("<MouseWheel>", self.thumb_mouse_scroll))
-        self.thumb_canvas.bind("<Leave>", lambda e: self.thumb_canvas.unbind_all("<MouseWheel>"))
+        # Enable mouse wheel scrolling only when hovering on sidebar
+        self.thumb_canvas.bind("<Enter>", lambda e: self._bind_mousewheel(self.thumb_canvas))
+        self.thumb_canvas.bind("<Leave>", lambda e: self._unbind_mousewheel(self.thumb_canvas))
 
         # Content area
-        content_area = tb.Frame(self.main_frame)
-        content_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.content_area = tb.Frame(self.main_frame, bootstyle="dark")
+        self.content_area.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        top_frame = tb.Frame(content_area)
+        top_frame = tb.Frame(self.content_area, bootstyle="dark")
         top_frame.pack(fill=tk.X, pady=5)
 
         tb.Button(top_frame, text="Open PDF", command=self.open_pdf, bootstyle="primary").pack(side=tk.LEFT, padx=5)
@@ -66,14 +76,16 @@ class PDFRedactorApp:
 
         tb.Button(top_frame, text="Undo", command=self.undo_redaction, bootstyle="warning").pack(side=tk.LEFT, padx=5)
         tb.Button(top_frame, text="Redo", command=self.redo_redaction, bootstyle="info").pack(side=tk.LEFT, padx=5)
-        tb.Button(top_frame, text="Cancel All", command=self.cancel_all_selections, bootstyle="danger").pack(side=tk.LEFT, padx=5)
+        tb.Button(top_frame, text="Cancel All", command=self.cancel_all_redactions, bootstyle="danger").pack(side=tk.LEFT, padx=5)
+
+        tb.Button(top_frame, text="Check for Update", command=self.check_for_update, bootstyle="secondary").pack(side=tk.LEFT, padx=5)
 
         tb.Button(top_frame, text="Zoom +", command=self.zoom_in).pack(side=tk.RIGHT, padx=5)
         tb.Button(top_frame, text="Zoom -", command=self.zoom_out).pack(side=tk.RIGHT, padx=5)
 
-        # Scrollable canvas for pages
-        self.canvas = tk.Canvas(content_area, bg="gray20", highlightthickness=0)
-        self.vscroll = tb.Scrollbar(content_area, orient=tk.VERTICAL, command=self.canvas.yview)
+        # Scrollable canvas for pages, dark bg
+        self.canvas = tk.Canvas(self.content_area, bg="gray20", highlightthickness=0)
+        self.vscroll = tb.Scrollbar(self.content_area, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vscroll.set)
 
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -88,12 +100,27 @@ class PDFRedactorApp:
         self.canvas.drop_target_register(DND_FILES)
         self.canvas.dnd_bind('<<Drop>>', self.drop)
 
-    def thumb_mouse_scroll(self, event):
-        delta = event.delta
-        if os.name == 'nt':
-            self.thumb_canvas.yview_scroll(int(-1 * (delta / 120)), "units")
-        else:
-            self.thumb_canvas.yview_scroll(int(-1 * delta), "units")
+    def _bind_mousewheel(self, widget):
+        widget.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _unbind_mousewheel(self, widget):
+        widget.unbind_all("<MouseWheel>")
+
+    def _on_mousewheel(self, event):
+        widget = event.widget
+        if widget == self.thumb_canvas or self._is_child_of(widget, self.thumb_container):
+            delta = event.delta
+            if os.name == 'nt':
+                self.thumb_canvas.yview_scroll(int(-1 * (delta / 120)), "units")
+            else:
+                self.thumb_canvas.yview_scroll(int(-1 * delta), "units")
+
+    def _is_child_of(self, widget, parent):
+        while widget:
+            if widget == parent:
+                return True
+            widget = widget.master
+        return False
 
     def drop(self, event):
         files = self.root.tk.splitlist(event.data)
@@ -132,7 +159,7 @@ class PDFRedactorApp:
             tk_img = ImageTk.PhotoImage(img)
             self.thumb_images.append(tk_img)
 
-            btn = tb.Button(self.thumb_container, image=tk_img, command=lambda idx=i: self.scroll_to_page(idx))
+            btn = tb.Button(self.thumb_container, image=tk_img, command=lambda idx=i: self.scroll_to_page(idx), bootstyle="dark")
             btn.pack(pady=2)
 
     def render_all_pages(self):
@@ -160,20 +187,18 @@ class PDFRedactorApp:
 
             y_offset = bbox[3] + gap
 
-        # Draw redaction boxes on canvas as translucent black rectangles
+        # Draw redaction boxes visually
         for page_index, rect in self.redaction_boxes:
-            # Get canvas coordinates of the page image
-            _, bbox = self.page_positions[page_index]
-            left = bbox[0]
-            top = bbox[1]
+            if page_index < len(self.page_positions):
+                _, bbox = self.page_positions[page_index]
+                left = bbox[0]
+                top = bbox[1]
 
-            # Convert PDF rect to canvas coords
-            x1 = left + rect.x0 * self.zoom_level
-            y1 = top + rect.y0 * self.zoom_level
-            x2 = left + rect.x1 * self.zoom_level
-            y2 = top + rect.y1 * self.zoom_level
-
-            self.canvas.create_rectangle(x1, y1, x2, y2, fill="black", stipple="gray50", outline="")
+                x1 = left + rect.x0 * self.zoom_level
+                y1 = top + rect.y0 * self.zoom_level
+                x2 = left + rect.x1 * self.zoom_level
+                y2 = top + rect.y1 * self.zoom_level
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill="black", stipple="gray50", outline="red", width=2)
 
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
@@ -233,6 +258,8 @@ class PDFRedactorApp:
                 self.undo_stack.append((page_index, pdf_rect))
                 self.redo_stack.clear()  # Clear redo stack after new action
                 self.canvas.itemconfig(self.rect, fill="black", stipple="gray50")
+                self.rect = None
+                self.render_all_pages()  # refresh to show redaction box
                 break
 
     def undo_redaction(self):
@@ -250,14 +277,11 @@ class PDFRedactorApp:
             self.undo_stack.append(last)
             self.render_all_pages()
 
-    def cancel_all_selections(self):
-        if not self.redaction_boxes:
-            return
-        if messagebox.askyesno("Cancel All", "Are you sure you want to cancel all redaction selections?"):
-            self.redaction_boxes.clear()
-            self.undo_stack.clear()
-            self.redo_stack.clear()
-            self.render_all_pages()
+    def cancel_all_redactions(self):
+        self.redaction_boxes.clear()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.render_all_pages()
 
     def save_pdf(self):
         if not self.doc or not self.redaction_boxes:
@@ -267,16 +291,93 @@ class PDFRedactorApp:
         for page_index, rect in self.redaction_boxes:
             page = self.doc[page_index]
             page.add_redact_annot(rect, fill=(0, 0, 0))
-            page.apply_redactions()
+        self.doc.apply_redactions()
 
         save_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF files", "*.pdf")])
         if save_path:
             self.doc.save(save_path)
             messagebox.showinfo("Success", "Redacted PDF saved.")
 
+    # --- Updater methods ---
 
-if __name__ == "__main__":
+    def check_for_update(self):
+        # Example GitHub API URL for releases of your repo - you must change this to your actual repo
+        GITHUB_RELEASES_API = "https://api.github.com/repos/yourusername/yourrepo/releases/latest"
+
+        def _check():
+            try:
+                resp = requests.get(GITHUB_RELEASES_API, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                latest_version = data["tag_name"].lstrip("v")
+                if latest_version > CURRENT_VERSION:
+                    if messagebox.askyesno("Update Available", f"Version {latest_version} is available. Download and install?"):
+                        self.download_and_update(data["assets"][0]["browser_download_url"])
+                else:
+                    messagebox.showinfo("Up to Date", "You already have the latest version.")
+            except Exception as e:
+                messagebox.showerror("Update Error", f"Failed to check for update:\n{e}")
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def download_and_update(self, url):
+        try:
+            temp_dir = tempfile.mkdtemp()
+            exe_path = os.path.join(temp_dir, EXECUTABLE_NAME)
+
+            def _download():
+                r = requests.get(url, stream=True)
+                total = int(r.headers.get('content-length', 0))
+                downloaded = 0
+                with open(exe_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                self.root.after(0, lambda: self.apply_update(exe_path))
+
+            threading.Thread(target=_download, daemon=True).start()
+
+        except Exception as e:
+            messagebox.showerror("Update Error", f"Failed to download update:\n{e}")
+
+    def apply_update(self, new_exe_path):
+        # This only works if your app is a single EXE portable file
+        try:
+            current_exe = sys.executable
+            if not current_exe.endswith(EXECUTABLE_NAME):
+                messagebox.showerror("Update Error", "Running as script, update disabled.")
+                return
+
+            # Copy new exe over current after exiting
+            backup_path = current_exe + ".backup"
+            shutil.copy2(current_exe, backup_path)
+
+            # Schedule replace after exit (Windows only method)
+            update_script = f"""
+            timeout /t 1 /nobreak > nul
+            move /y "{new_exe_path}" "{current_exe}"
+            start "" "{current_exe}"
+            """
+
+            bat_path = os.path.join(tempfile.gettempdir(), "update.bat")
+            with open(bat_path, "w") as bat_file:
+                bat_file.write(update_script)
+
+            # Exit current app and run bat
+            subprocess.Popen(['cmd', '/c', bat_path], shell=True)
+            self.root.quit()
+
+        except Exception as e:
+            messagebox.showerror("Update Error", f"Failed to apply update:\n{e}")
+
+
+def main():
     root = TkinterDnD.Tk()
-    tb.Style("superhero")  # Options: superhero, flatly, darkly, cyborg, etc.
+    style = tb.Style("darkly")
     app = PDFRedactorApp(root)
     root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
