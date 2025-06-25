@@ -11,7 +11,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 import threading
 import webbrowser
 
-VERSION = "1.0"
+VERSION = "1.2"
 VERSION_URL = "https://github.com/Holland-exe/PDF-Redact/releases/download/latest/version.txt"
 UPDATE_URL = "https://github.com/Holland-exe/PDF-Redact/releases/download/latest/pdfredact.exe"
 
